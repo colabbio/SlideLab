@@ -87,6 +87,8 @@ def tiling(ts, result_path, overlap=False, stride=512):
                 # get mask of tile
                 tile_mask = masking.tile_mask(tissue_rgb)
                 tile_mask_clean = masking.remove_small_objects(np.copy(tile_mask))
+                tile_mask_clean = masking.remove_small_objects(~np.copy(tile_mask))
+                tile_mask_clean = 255- tile_mask_clean
                 #see if background
                 background = masking.is_background(tile_mask, tissue_rgb)
                 if  masking.is_background(tile_mask, tissue_rgb) == False and masking.is_background(tile_mask_clean, tissue_rgb) == False:  # Check if the tile is not a background
@@ -240,7 +242,7 @@ def main():
         path = r"C:\Users\albao\Downloads\gdc_download_20240320_111546.230274"  # Provide default input path here
     result_path = input("Enter result path (or leave blank for default): ").strip()
     if not result_path:
-        result_path = r"C:\Users\albao\Masters\WSI_adjusted"  # Provide default result path here
+        result_path = r"C:\Users\albao\Masters\WSI_proper"  # Provide default result path here
     processes = input("Please enter number of threads for multiprocessing(leave blank for no multiprocessing): ").strip()
     if not processes:
         processes = 1
