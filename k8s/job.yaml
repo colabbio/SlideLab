@@ -1,0 +1,147 @@
+# SlideLab K8s Job — Single WSI batch processing run
+# 
+# Usage:
+#   kubectl apply -f job.yaml
+#   kubectl logs -f job/slidelab-batch
+#
+# For GPU:
+#   Set image to slidelab:gpu and uncomment nvidia.com/gpu resource
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: slidelab-batch
+  namespace: colabbio
+  labels:
+    app: slidelab
+    pipeline: wsi-preprocessing
+    component: batch-processor
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400  # cleanup after 24h
+  template:
+    metadata:
+      labels:
+        app: slidelab
+        pipeline: wsi-preprocessing
+    spec:
+      restartPolicy: OnFailure
+      
+      # --- Init container: ensure output directory exists ---
+      initContainers:
+        - name: ensure-dirs
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /output/slidelab-results"]
+          volumeMounts:
+            - name: output-volume
+              mountPath: /output
+      
+      containers:
+        - name: slidelab
+          image: slidelab:cpu  # or slidelab:gpu for CUDA
+          
+          args:
+            - "-i"
+            - "/input/slides"
+            - "-o"
+            - "/output/slidelab-results"
+            - "-s"
+            - "256"
+            - "-m"
+            - "20"
+            - "--normalize_staining"
+            - "macenko"
+            - "--device"
+            - "cpu"
+            - "--remove_blurry_tiles"
+            - "--reconstruct_slide"
+            - "--batch_size"
+            - "32"
+          
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "2"
+            limits:
+              memory: "16Gi"
+              cpu: "8"
+              # nvidia.com/gpu: "1"  # uncomment for GPU jobs
+          
+          volumeMounts:
+            # WSI slides input (from MedVFS, NFS, or PVC)
+            - name: input-volume
+              mountPath: /input/slides
+              readOnly: true
+            # Output tiles + reports
+            - name: output-volume
+              mountPath: /output
+            # Optional: custom config.yml override
+            - name: config
+              mountPath: /app/SlideLab/config.yml
+              subPath: config.yml
+              readOnly: true
+      
+      volumes:
+        # Option A: NFS mount from hospital pathology NAS
+        - name: input-volume
+          persistentVolumeClaim:
+            claimName: pathology-slides-pvc
+        
+        # Option B: Use MedVFS output as input
+        # - name: input-volume
+        #   persistentVolumeClaim:
+        #     claimName: medvfs-output-pvc
+        
+        # Output PVC for tiles
+        - name: output-volume
+          persistentVolumeClaim:
+            claimName: slidelab-output-pvc
+        
+        # Config override via ConfigMap
+        - name: config
+          configMap:
+            name: slidelab-config
+            optional: true
+
+---
+# ConfigMap for pipeline configuration overrides
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slidelab-config
+  namespace: colabbio
+data:
+  config.yml: |
+    input_path: /input/slides
+    output_path: /output/slidelab-results
+    desired_size: 256
+    desired_magnification: 20
+    overlap: 1
+    output_format: png
+    sizing_scale: magnification
+    remove_blurry_tiles: true
+    normalize_staining: macenko
+    reconstruct_slide: true
+    tissue_threshold: 0.8
+    blur_threshold: 0.05
+    include_adipose_tissue: false
+    remove_folds: true
+    mask_scale: 64
+    device: cpu
+    batch_size: 32
+    min_tiles: 0
+
+---
+# PVC for SlideLab output (tiles, CSVs, reports)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: slidelab-output-pvc
+  namespace: colabbio
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi  # tiles can be large
+  storageClassName: standard

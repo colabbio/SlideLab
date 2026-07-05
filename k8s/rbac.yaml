@@ -1,0 +1,64 @@
+# SlideLab Kubernetes RBAC for Nextflow executor
+# Nextflow needs permissions to create/manage pods in the namespace
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: slidelab-sa
+  namespace: colabbio
+  labels:
+    app: slidelab
+    component: nextflow-executor
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: slidelab-nextflow-role
+  namespace: colabbio
+rules:
+  # Nextflow needs to create pods for each process
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Nextflow uses PVCs for work directory
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "create", "delete"]
+  # Config maps for passing parameters
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: slidelab-nextflow-binding
+  namespace: colabbio
+subjects:
+  - kind: ServiceAccount
+    name: slidelab-sa
+    namespace: colabbio
+roleRef:
+  kind: Role
+  name: slidelab-nextflow-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# PVC for Nextflow work directory (shared across pipeline tasks)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: slidelab-nf-work
+  namespace: colabbio
+  labels:
+    app: slidelab
+    component: nextflow-workdir
+spec:
+  accessModes:
+    - ReadWriteMany  # Required for Nextflow K8s executor
+  resources:
+    requests:
+      storage: 200Gi
+  storageClassName: standard
