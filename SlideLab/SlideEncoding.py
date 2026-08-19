@@ -204,7 +204,7 @@ class SlideEncoding:
         )
 
         def collate_fn(batch):
-            valid_batch = [item for item in batch if item[0] is not None]
+            valid_batch = [item for item in batch if item is not None and item[0] is not None]
             if not valid_batch:
                 return None, None
             images, coords = zip(*valid_batch)
@@ -217,72 +217,86 @@ class SlideEncoding:
             'pin_memory': False
         }
 
-        for images, coords in DataLoader(dataset, **loader_kwargs):
-            if images is None:
-                continue
-            with torch.inference_mode():
-                features = self.encoder(images).flatten(1).cpu().numpy()
-                writer.add_data('features', features)
-                writer.add_data('coords', coords.cpu().numpy())
+        try:
+            dataloader = DataLoader(dataset, **loader_kwargs)
+            for images, coords in dataloader:
+                if images is None:
+                    continue
+                with torch.inference_mode():
+                    if images.ndim == 4:
+                        features = self.encoder(images).flatten(1).cpu().numpy()
+                    else:
+                        batch_size, num_versions = images.shape[:2]
+                        features = self.encoder(images.flatten(0, 1)).flatten(1)
+                        features = features.view(batch_size, num_versions, -1).cpu().numpy()
+                    writer.add_data('features', features)
+                    writer.add_data('coords', coords.cpu().numpy())
+        finally:
+            writer.finalize({})
+            torch.cuda.empty_cache()
 
-        # Finalize so data is actually written and file is closed
-        writer.finalize({})
-        torch.cuda.empty_cache()
-
-
-
-    def _encode_no_saving_gpu(self, slide,output_path,coords, mask, adjusted_size, desired_size):
-        dataset = CPUTileDataset(
+    def _encode_no_saving_gpu(self, slide, output_path, coords, mask, adjusted_size, desired_size):
+        from tiling.no_saving.cpu import GPUTileDataset
+        dataset = GPUTileDataset(
             slide=slide,
             coordinates=coords,
             adjusted_size=adjusted_size,
             desired_size=desired_size,
             pipeline_steps=[],
             transforms=None,
+            device=self.device
         )
         def skip_none_collate(batch):
-            # remove None tiles
             batch = [(t, c) for t, c in batch if t is not None]
             if len(batch) == 0:
                 return None
             tiles, coords = zip(*batch)
             return torch.stack(tiles), torch.stack(coords)
-        dataloader = DataLoader(dataset,collate_fn=skip_none_collate, **self.loader_kwargs)
-        vars_dict =  multiprocessing.Manager().dict()
+
+        dataloader = DataLoader(dataset, collate_fn=skip_none_collate, **self.loader_kwargs)
+        vars_dict = multiprocessing.Manager().dict()
         writer = H5Writer(output_path)
-        for batch in dataloader:
-            if batch is None:
-                continue
-            batch_tiles, coord_batch = batch
-            batch_tiles = batch_tiles.to(self.device, non_blocking=True)
-            coord_batch =coord_batch.to(self.device, non_blocking=True)
+        try:
+            for batch in dataloader:
+                if batch is None:
+                    continue
+                batch_tiles, coord_batch = batch
+                batch_tiles = batch_tiles.to(self.device, non_blocking=True)
+                coord_batch = coord_batch.to(self.device, non_blocking=True)
 
-
-            for step in self.pipeline_steps:
-                batch_tiles, coord_batch = step(batch_tiles, vars_dict, coord_batch)
+                for step in self.pipeline_steps:
+                    batch_tiles, coord_batch = step(batch_tiles, vars_dict, coord_batch)
+                    if batch_tiles.numel() == 0:
+                        break
                 if batch_tiles.numel() == 0:
-                    break
-            if batch_tiles.numel() == 0:
-                continue
+                    continue
 
-            # apply transforms
-            batch_tiles = batch_tiles.permute(0,3,1,2)
-            images = torch.stack([self.transforms(img) for img in batch_tiles])  # B,C,H,W
-            images = images.to(self.device, non_blocking=True)
-            # send to model
-            with torch.inference_mode():
-                if images.ndim == 4:  # No augmentations
-                    features = self.encoder(images).flatten(start_dim=1).cpu().numpy()
-                    writer.add_data('features', features)
-                else:  # With augmentations
-                    batch_size, num_versions = images.shape[:2]
-                    features = self.encoder(images.flatten(0, 1)).flatten(start_dim=1)
-                    features = features.view(batch_size, num_versions, -1).cpu().numpy()
-                    writer.add_data('features', features.cpu().numpy())
-                writer.add_data('coords', coord_batch.cpu().numpy())
-            del coord_batch, images,batch_tiles
-        torch.cuda.empty_cache()
-        del dataloader
+                # apply transforms
+                if batch_tiles.shape[-1] == 3: # HWC -> CHW
+                    batch_tiles = batch_tiles.permute(0, 3, 1, 2)
+                
+                if self.transforms is not None:
+                    images = torch.stack([self.transforms(img) for img in batch_tiles])
+                else:
+                    images = batch_tiles.float()
+
+                images = images.to(self.device, non_blocking=True)
+                # send to model
+                with torch.inference_mode():
+                    if images.ndim == 4:  # No augmentations
+                        features = self.encoder(images).flatten(start_dim=1).cpu().numpy()
+                        writer.add_data('features', features)
+                    else:  # With augmentations
+                        batch_size, num_versions = images.shape[:2]
+                        features = self.encoder(images.flatten(0, 1)).flatten(start_dim=1)
+                        features = features.view(batch_size, num_versions, -1).cpu().numpy()
+                        writer.add_data('features', features)
+                    writer.add_data('coords', coord_batch.cpu().numpy())
+                del coord_batch, images, batch_tiles
+        finally:
+            writer.finalize({})
+            torch.cuda.empty_cache()
+            del dataloader
         return vars_dict
 
 

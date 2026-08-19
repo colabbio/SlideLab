@@ -1,6 +1,6 @@
-# external imports
 import os
 import time
+import json
 import multiprocessing
 import threading
 import pandas as pd
@@ -94,7 +94,7 @@ class SlidePreprocessing:
         # OVERLAP
         if self.config.get("overlap") < 1:
             raise ValueError(
-                f"Overlap must be equal or greater than 1, currently it is set up as {self.config.get("overlap")}")
+                f"Overlap must be equal or greater than 1, currently it is set up as {self.config.get('overlap')}")
 
         # NORMALIZATION
         if not self.config.get("normalize_staining") in ["macenko", "reinhard", "stainnet", None]:
@@ -825,9 +825,9 @@ def parse_args():
     parser.add_argument("-bh", "--blur_threshold", type=float, default=0.025,
                         help="Threshold for laplace filter variance (default: %(default)s)")
     parser.add_argument("--red_pen_check", type=float, default=0.4,
-                        help="Sanity check for % of red pen detected. If above threshold, red_pen mask will be ignored(default: %(default)s)")
+                        help="Sanity check for percentage of red pen detected. If above threshold, red_pen mask will be ignored (default: %(default)s)")
     parser.add_argument("--blue_pen_check", type=float, default=0.4,
-                        help="Sanity check for % of blue pen detected,  If above threshold, blue_pen mask will be ignored(default: %(default)s)")
+                        help="Sanity check for percentage of blue pen detected. If above threshold, blue_pen mask will be ignored (default: %(default)s)")
     parser.add_argument("--include_adipose_tissue", action="store_true", help="will include adipose tissue in mask")
     parser.add_argument("--remove_folds", action="store_true", help="will remove folded tissue in mask")
     parser.add_argument("--mask_scale", type=int, default=None,
@@ -842,6 +842,12 @@ def parse_args():
     # QC
     parser.add_argument("--min_tiles", type=float, default=0,
                         help="Number of tiles a patient should have.")
+
+    # On-the-fly streaming & OMERO metrics
+    parser.add_argument("--stream_features", action="store_true",
+                        help="Enables zero-disk on-the-fly streaming directly to features.h5 without saving tiles to disk.")
+    parser.add_argument("--export_json_metrics", action="store_true", default=True,
+                        help="Exports per-slide metrics and QC metadata to a JSON file.")
     return parser.parse_args()
 
 
@@ -858,6 +864,11 @@ def main():
 
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"The file '{input_path}' does not exist.")
+    
+    if args.get("stream_features"):
+        args["output_format"] = None
+        args["encode"] = True
+
     if args.get("output_format") == "null":
         args["output_format"] = None 
 
@@ -884,40 +895,64 @@ def main():
             t.update(1)
     else:
         t = tqdm.tqdm(zip(patients["Original Slide Path"].values, patients["Patient ID"].values), total=len(patients))
-        print("No output format was flagged, and so feature extraction will take place automatically.")
-        encoding_dir = os.path.join(output_path, f"{preprocessor.config.get("feature_extractor")}_features")
-        os.makedirs(encoding_dir,exist_ok=True)
+        print("No output format was flagged, and so on-the-fly streaming feature extraction will take place directly.")
+        encoding_dir = os.path.join(output_path, f"{preprocessor.config.get('feature_extractor')}_features")
+        os.makedirs(encoding_dir, exist_ok=True)
 
         # initiate the encoder module
         from SlideEncoding import SlideEncoding
         slide_encoder = SlideEncoding(preprocessor.config, preprocessor.pipeline_steps)
         # loop
         for slide_path, patient_id in t:
-            t.set_description(f"Encoding: {patient_id}")
+            t.set_description(f"Streaming & Encoding: {patient_id}")
             t.refresh()
             # path to save features
-            sample_path = os.path.join(encoding_dir, patient_id+".h5")
+            sample_path = os.path.join(encoding_dir, patient_id + ".h5")
+            metrics_path = os.path.join(encoding_dir, patient_id + "_metrics.json")
             # processed slide
-            out = preprocessor.__call__(slide_path,  patient_id,output_path)
+            out = preprocessor.__call__(slide_path, patient_id, output_path)
             if len(out) == 2:
                 summary, error = out
+                coords = []
+                mask = None
+                adjusted_size = None
             else:
                 slide, coords, mask, magnification, adjusted_size, summary, error = out
             report_instance = Reports.Reports([summary], [error], output_path)
             # only continue if there was NO error -> if there was some sort of error, shouldn't continue
             start_cpu_time = time.process_time()
             start_user_time = time.time()
-            if not error:
-
-                results = slide_encoder.__call__(slide, sample_path, coords,
-                                                 mask, adjusted_size,
-                                                 preprocessor.config.get("desired_size"))
+            num_extracted_tiles = len(coords) if coords is not None else 0
+            if not error and num_extracted_tiles > 0:
+                results = slide_encoder.__call__(
+                    slide, sample_path, coords,
+                    mask, adjusted_size,
+                    preprocessor.config.get("desired_size")
+                )
             t.update(1)
-            encoding_times.append((patient_id, time.process_time() - start_cpu_time, time.time() - start_user_time))
+            elapsed_cpu = time.process_time() - start_cpu_time
+            elapsed_user = time.time() - start_user_time
+            encoding_times.append((patient_id, elapsed_cpu, elapsed_user))
             report_instance.summary_report_update_encoding(encoding_times)
 
-        # report_instance = Reports.Reports([[]], [[]], output_path)
-        # report_instance.summary_report_update_encoding(encoding_times)
+            if args.get("export_json_metrics", True):
+                metrics_data = {
+                    "patient_id": patient_id,
+                    "slide_path": slide_path,
+                    "feature_extractor": preprocessor.config.get("feature_extractor"),
+                    "device": preprocessor.config.get("device"),
+                    "num_tiles": num_extracted_tiles,
+                    "has_error": bool(error),
+                    "error_message": str(error) if error else None,
+                    "elapsed_cpu_seconds": elapsed_cpu,
+                    "elapsed_user_seconds": elapsed_user,
+                    "summary": summary if summary else {}
+                }
+                try:
+                    with open(metrics_path, "w", encoding="utf-8") as jf:
+                        json.dump(metrics_data, jf, indent=2, default=str)
+                except Exception as ex:
+                    print(f"[WARN] Could not write metrics JSON for {patient_id}: {ex}")
 
     # encoding for all other cases other than no saving
 

@@ -1,0 +1,55 @@
+apiVersion: skaffold/v4beta13
+kind: Config
+metadata:
+  name: slidelab
+
+build:
+  artifacts:
+    - image: colabbio/slidelab
+      context: .
+      docker:
+        dockerfile: Dockerfile
+        target: cpu
+
+profiles:
+  - name: cpu
+    activation:
+      - command: dev
+    build:
+      artifacts:
+        - image: colabbio/slidelab
+          context: .
+          docker:
+            dockerfile: Dockerfile
+            target: cpu
+
+  - name: gpu
+    build:
+      artifacts:
+        - image: colabbio/slidelab-gpu
+          context: .
+          docker:
+            dockerfile: Dockerfile
+            target: gpu
+
+  - name: all
+    build:
+      artifacts:
+        - image: colabbio/slidelab-cpu
+          context: .
+          docker:
+            dockerfile: Dockerfile
+            target: cpu
+        - image: colabbio/slidelab-gpu
+          context: .
+          docker:
+            dockerfile: Dockerfile
+            target: gpu
+
+manifests:
+  rawYaml:
+    - k8s/rbac.yaml
+    - k8s/job.yaml
+
+deploy:
+  kubectl: {}
