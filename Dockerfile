@@ -29,8 +29,10 @@ LABEL org.opencontainers.image.source="https://github.com/lolmomarchal/SlideLab"
 
 # System deps for OpenSlide, OpenCV, and image processing
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
     libopenslide-dev \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -47,7 +49,7 @@ FROM base AS cpu
 # Install CPU-only PyTorch first (keeps image ~1.5GB vs ~6GB with CUDA)
 RUN pip install --no-cache-dir \
     torch torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cpu
+    --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Install remaining Python deps
 COPY requirements.txt /app/requirements.txt
@@ -57,13 +59,14 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY SlideLab/ /app/SlideLab/
 COPY __init__.py /app/
 
+ENV PYTHONPATH="/app:/app/SlideLab"
+
 WORKDIR /app/SlideLab
 
 # Health check: verify OpenSlide is importable
 RUN python -c "import openslide; print(f'OpenSlide {openslide.__library_version__}')"
 
-ENTRYPOINT ["python", "SlidePreprocessing.py"]
-CMD ["--help"]
+CMD ["python", "SlidePreprocessing.py", "--help"]
 
 # ─── Stage 3: GPU variant (CUDA 11.8) ────────────────────────────────────────
 FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04 AS gpu-base
@@ -73,7 +76,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3.10-dev \
     libopenslide-dev \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -90,7 +93,7 @@ FROM gpu-base AS gpu
 # Install CUDA-enabled PyTorch
 RUN pip install --no-cache-dir \
     torch torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cu118
+    --extra-index-url https://download.pytorch.org/whl/cu118
 
 # Install remaining Python deps
 COPY requirements.txt /app/requirements.txt

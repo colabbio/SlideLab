@@ -26,11 +26,13 @@ params.input_dir        = null           // Required: path to WSI slides
 params.output_dir       = './results'    // Output directory
 params.tile_size        = 256            // Tile size in pixels
 params.magnification    = 20             // Target magnification
-params.normalize        = 'macenko'      // Stain normalization: macenko, reinhard, null
+params.normalize        = 'macenko'      // Stain normalization: macenko, reinhard, stainnet, null
 params.device           = 'cpu'          // cpu or cuda
 params.batch_size       = 32             // Batch size for GPU processing
-params.encode           = false          // Enable feature encoding
-params.encoder          = 'resnet50'     // Feature extractor model
+params.encode           = true           // Enable feature encoding
+params.encoder          = 'resnet50'     // Feature extractor model: resnet50, mahmood-uni, resnet50-truncated
+params.stream_features  = true           // Zero-disk on-the-fly streaming directly to features.h5
+params.omero_write_back = false          // Write PAC and QC findings back to OMERO Server
 params.clinical_csv     = null           // Optional: clinical data CSV for join
 params.tissue_threshold = 0.8
 params.blur_threshold   = 0.05
@@ -121,7 +123,7 @@ process PREPROCESS_SLIDE {
 }
 
 /*
- * STEP 3: Feature encoding (optional)
+ * STEP 3: Feature encoding (decoupled / legacy disk mode)
  */
 process ENCODE_FEATURES {
     tag "${patient_id}"
@@ -134,7 +136,7 @@ process ENCODE_FEATURES {
     time '4h'
     
     when:
-    params.encode
+    params.encode && !params.stream_features
     
     input:
     tuple val(patient_id), path(tile_dir)
@@ -156,6 +158,81 @@ process ENCODE_FEATURES {
     # Rename output for clarity
     mv ${params.encoder}_features/${patient_id}.h5 ${patient_id}_features.h5 || \
     mv ${params.encoder}/${patient_id}.h5 ${patient_id}_features.h5 || true
+    """
+}
+
+/*
+ * UNIFIED STEP: Zero-Disk On-The-Fly Preprocessing & Encoding (CLAM Pattern + SlideLab QC)
+ */
+process PROCESS_AND_ENCODE_WSI {
+    tag "${patient_id}"
+    publishDir "${params.output_dir}/features", mode: 'copy', pattern: '*.h5'
+    publishDir "${params.output_dir}/metrics", mode: 'copy', pattern: '*_metrics.json'
+    
+    container params.device == 'cuda' ? 'slidelab:gpu' : 'slidelab:cpu'
+    accelerator params.device == 'cuda' ? 1 : 0, type: 'nvidia.com/gpu'
+    
+    cpus params.device == 'cpu' ? 8 : 4
+    memory params.device == 'cpu' ? '16 GB' : '8 GB'
+    time '2h'
+    
+    errorStrategy { task.exitStatus in [137, 143] ? 'retry' : 'terminate' }
+    maxRetries 2
+    
+    input:
+    tuple val(patient_id), path(slide_file)
+    
+    output:
+    tuple val(patient_id), path("${patient_id}_features.h5"), emit: features
+    tuple val(patient_id), path("${patient_id}_metrics.json"), emit: metrics
+    
+    script:
+    def norm_flag = params.normalize ? "--normalize_staining ${params.normalize}" : ""
+    def blur_flag = params.remove_blurry ? "--remove_blurry_tiles" : ""
+    def folds_flag = params.remove_folds ? "--remove_folds" : ""
+    """
+    python /app/SlideLab/SlidePreprocessing.py \
+        -i ${slide_file} \
+        -o . \
+        -s ${params.tile_size} \
+        -m ${params.magnification} \
+        ${norm_flag} \
+        ${blur_flag} \
+        ${folds_flag} \
+        --tissue_threshold ${params.tissue_threshold} \
+        --blur_threshold ${params.blur_threshold} \
+        --mask_scale ${params.mask_scale} \
+        --device ${params.device} \
+        --batch_size ${params.batch_size} \
+        --feature_extractor ${params.encoder} \
+        --stream_features \
+        --export_json_metrics
+    
+    # Normalize output names
+    mv ${params.encoder}_features/${patient_id}.h5 ${patient_id}_features.h5
+    mv ${params.encoder}_features/${patient_id}_metrics.json ${patient_id}_metrics.json
+    """
+}
+
+/*
+ * OMERO WRITE-BACK: Persist PAC Score, QC metrics, and diagnosis to OMERO Server
+ */
+process WRITE_OMERO_ANNOTATIONS {
+    tag "${patient_id}"
+    
+    container 'slidelab:cpu'
+    
+    when:
+    params.omero_write_back
+    
+    input:
+    tuple val(patient_id), path(metrics_json)
+    
+    script:
+    """
+    python /app/SlideLab/integrations/omero_writer.py \
+        --image_id \${OMERO_IMAGE_ID:-1} \
+        --metrics_json ${metrics_json}
     """
 }
 
@@ -227,23 +304,30 @@ workflow {
             tuple(patient_id, file)
         }
     
-    // Step 2: Preprocess each slide (parallelized automatically)
-    PREPROCESS_SLIDE(slide_ch)
-    
-    // Step 3: Encode features (if enabled)
-    if (params.encode) {
-        ENCODE_FEATURES(PREPROCESS_SLIDE.out.tiles)
+    if (params.stream_features) {
+        // High-performance Zero-Disk Streaming pipeline
+        PROCESS_AND_ENCODE_WSI(slide_ch)
+        
+        if (params.omero_write_back) {
+            WRITE_OMERO_ANNOTATIONS(PROCESS_AND_ENCODE_WSI.out.metrics)
+        }
+    } else {
+        // Classical decoupled pipeline with intermediate disk tiles
+        PREPROCESS_SLIDE(slide_ch)
+        
+        if (params.encode) {
+            ENCODE_FEATURES(PREPROCESS_SLIDE.out.tiles)
+        }
+        
+        clinical_ch = params.clinical_csv 
+            ? Channel.fromPath(params.clinical_csv) 
+            : Channel.of(file('NO_CLINICAL'))
+        
+        AGGREGATE_RESULTS(
+            PREPROCESS_SLIDE.out.tile_csv.collect(),
+            clinical_ch
+        )
     }
-    
-    // Step 4: Aggregate results
-    clinical_ch = params.clinical_csv 
-        ? Channel.fromPath(params.clinical_csv) 
-        : Channel.of(file('NO_CLINICAL'))
-    
-    AGGREGATE_RESULTS(
-        PREPROCESS_SLIDE.out.tile_csv.collect(),
-        clinical_ch
-    )
 }
 
 // ─── Completion handler ──────────────────────────────────────────
@@ -256,6 +340,7 @@ workflow.onComplete {
      Duration  : ${workflow.duration}
      Output    : ${params.output_dir}
      Slides    : ${workflow.stats.succeededCount} processed
+     Mode      : ${params.stream_features ? 'Zero-Disk Streaming (On-The-Fly)' : 'Decoupled Disk Tiling'}
     ═══════════════════════════════════════════════
     """.stripIndent()
 }

@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.h5
+*.csv
+.DS_Store
+.nextflow*
+work/
+results/
