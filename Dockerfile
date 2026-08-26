@@ -103,10 +103,11 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY SlideLab/ /app/SlideLab/
 COPY __init__.py /app/
 
+ENV PYTHONPATH="/app:/app/SlideLab"
+
 WORKDIR /app/SlideLab
 
 # Health check
 RUN python -c "import openslide; import torch; print(f'OpenSlide OK, CUDA available: {torch.cuda.is_available()}')"
 
-ENTRYPOINT ["python", "SlidePreprocessing.py"]
-CMD ["--help"]
+CMD ["python", "SlidePreprocessing.py", "--help"]
