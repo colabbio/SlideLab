@@ -12,6 +12,7 @@ import os
 import json
 import logging
 import argparse
+import urllib.request
 from typing import Dict, Any, Optional, List, Tuple
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -20,6 +21,10 @@ logger = logging.getLogger("SlideLab.OmeroWriter")
 class OmeroWriter:
     """
     Client for writing SlideLab preprocessing, QC, and MIL results back to OMERO.
+    Implements CB-SPEC-CRED-022 §4.3.2 (Zero-Credential Footprint in Workloads):
+      1. Prioritizes passwordless ephemeral OMERO_SESSION UUIDs minted by cb-svc-ai.
+      2. Can dynamically mint an ephemeral OMERO_SESSION from cb-svc-ai using COLABBIO_STUDY_TOKEN
+         and COLABBIO_GRANT_ID without ever holding raw hospital OMERO passwords.
     """
     def __init__(
         self,
@@ -28,7 +33,10 @@ class OmeroWriter:
         username: Optional[str] = None,
         password: Optional[str] = None,
         session_id: Optional[str] = None,
-        group: Optional[str] = None
+        group: Optional[str] = None,
+        grant_id: Optional[str] = None,
+        study_token: Optional[str] = None,
+        ai_control_plane_url: Optional[str] = None
     ):
         self.host = host or os.environ.get("OMERO_HOST", "omero.colabbio.lan")
         self.port = int(port or os.environ.get("OMERO_PORT", 4064))
@@ -36,10 +44,33 @@ class OmeroWriter:
         self.password = password or os.environ.get("OMERO_PASS", "")
         self.session_id = session_id or os.environ.get("OMERO_SESSION", None)
         self.group = group or os.environ.get("OMERO_GROUP", None)
+        self.grant_id = grant_id or os.environ.get("COLABBIO_GRANT_ID", "GRANT-2026-LAFE-001")
+        self.study_token = study_token or os.environ.get("COLABBIO_STUDY_TOKEN", None)
+        self.ai_control_plane_url = ai_control_plane_url or os.environ.get("COLABBIO_AI_URL", None)
         self._conn = None
 
+    def _mint_ephemeral_session_if_needed(self) -> Optional[str]:
+        """Requests a passwordless ephemeral OMERO_SESSION UUID from cb-svc-ai if not already set."""
+        if self.session_id or not self.ai_control_plane_url:
+            return self.session_id
+        try:
+            url = f"{self.ai_control_plane_url.rstrip('/')}/api/v1/auth/omero-study-session"
+            req = urllib.request.Request(url, method="POST")
+            req.add_header("X-ColabBio-Grant-Id", self.grant_id)
+            if self.study_token:
+                req.add_header("Authorization", f"Bearer {self.study_token}")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                self.session_id = data.get("omeroSessionUuid")
+                logger.info(f"Minted passwordless ephemeral OMERO_SESSION for grant '{self.grant_id}'.")
+                return self.session_id
+        except Exception as e:
+            logger.debug(f"Could not mint ephemeral OMERO session from {self.ai_control_plane_url}: {e}")
+            return None
+
     def connect(self):
-        """Establish BlitzGateway connection to OMERO."""
+        """Establish BlitzGateway connection to OMERO (prioritizing passwordless OMERO_SESSION)."""
+        self._mint_ephemeral_session_if_needed()
         try:
             from omero.gateway import BlitzGateway
             if self.session_id:
