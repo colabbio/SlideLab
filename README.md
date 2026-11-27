@@ -145,8 +145,9 @@ Please refer to the tutorials folder!
 
 ## Documentation & Thesis
 
-- **[SlideLab & PAC Preprint](docs/slidelab_article.md)** — Full manuscript covering modular preprocessing, zero-disk MedVFS streaming, 1,000-WSI TCGA-COAD benchmarks, and Polarized Attentional Certainty (PAC).
-- **[UC San Diego M.S. Thesis Defense Slides (PDF)](docs/thesis_presentation.pdf)** — *"A Modular Framework for Preprocessing and Interpretable Multi-Instance Learning in Cancer Whole Slide Image Analysis"* (Lorenzo Olmo Marchal, 2025).
+- **[SlideLab Preprint (`slidelab_article.md`)](docs/slidelab_article.md)** — Modular preprocessing, 1,000-WSI TCGA-COAD benchmarks, ABMIL FFPE/Flash-Frozen results, and zero-disk MedVFS streaming comparison.
+- **[Polarized Attentional Certainty (PAC) Preprint (`pac_article.md`)](docs/pac_article.md)** — Interpretability metric combining attention and class-logit certainty across colorectal MSI-H/MSS WSIs and B-ALL flow cytometry.
+- **[UC San Diego M.S. Thesis Defense Slides (PDF)](docs/thesis_presentation.pdf)** · **[Open in Google Slides](https://docs.google.com/presentation/d/1AZUdJUrf6N98_nFGE76qFn8rHJB9XNI0SPVWnQrF70k/present)** — *"A Modular Framework for Preprocessing and Interpretable Multi-Instance Learning in Cancer Whole Slide Image Analysis"* (Lorenzo Olmo Marchal, 2025).
 - **[Researcher Guide](docs/RESEARCHER_GUIDE.md)** — Standalone HPC vs. ColabBio platform execution guide.
 
 ## Contact
