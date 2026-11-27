@@ -1,3 +1,7 @@
+# SlideLab — Modular WSI Preprocessing & Streaming
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 # Table of Contents  
 
 <img src="https://github.com/user-attachments/assets/9bc49130-b598-4efc-9f6d-d699c588b33c" align="right" width="400" style="margin-left: 15px;"/>
@@ -139,8 +143,17 @@ python SlidePreprocessing.py -i /path/to/input/-o /path/to/output/ \
 ## To run individual classes: 
 Please refer to the tutorials folder!
 
+## Documentation & Thesis
+
+- **[SlideLab & PAC Preprint](docs/slidelab_article.md)** — Full manuscript covering modular preprocessing, zero-disk MedVFS streaming, 1,000-WSI TCGA-COAD benchmarks, and Polarized Attentional Certainty (PAC).
+- **[UC San Diego M.S. Thesis Defense Slides (PDF)](docs/thesis_presentation.pdf)** — *"A Modular Framework for Preprocessing and Interpretable Multi-Instance Learning in Cancer Whole Slide Image Analysis"* (Lorenzo Olmo Marchal, 2025).
+- **[Researcher Guide](docs/RESEARCHER_GUIDE.md)** — Standalone HPC vs. ColabBio platform execution guide.
+
 ## Contact
-For questions/requests please make an issue or email aolmomarchal@ucsd.edu under the subject "SlideLab: [insert question]"
+For questions/requests please open an issue or email `lolmomarchal@colabbio.org` (or `aolmomarchal@ucsd.edu`) under the subject `"SlideLab: [insert question]"`.
+
+## License
+Licensed under the [Apache License 2.0](LICENSE) — Copyright 2026 ColabBio.
 
 ## References 
 1. M. Macenko et al., "A method for normalizing histology slides for quantitative analysis," 2009 IEEE International Symposium on Biomedical Imaging: From Nano to Macro, Boston, MA, USA, 2009, pp. 1107-1110, doi: 10.1109/ISBI.2009.5193250.
